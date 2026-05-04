@@ -42,8 +42,13 @@ export type LinkResolutionType = 'qualified' | 'unqualified';
  *   - Gbrain canonical: people, companies, meetings, concepts, deal, civic, project, source, media, yc, projects
  *   - Our domain extensions: tech, finance, personal, openclaw (domain-organized wikis)
  *   - Our entity prefix: entities (we kept some legacy entities/projects/ pages)
+ *   - Our brain-build schema (D-DD1, 2026-04-29; expanded 2026-05-04 PM after diagnosis
+ *     showing 338 of 338 wikilinks in our corpus targeted dirs not in the upstream
+ *     whitelist → 100% invisible to the graph): institutions, ideas, programs, places,
+ *     health, diary, decisions, events, household, inbox, sources (plural alias for
+ *     `source`), writing, digests
  */
-const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities)';
+const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|sources|media|yc|tech|finance|personal|openclaw|entities|institutions|ideas|programs|places|health|diary|decisions|events|household|inbox|writing|digests)';
 
 /**
  * Match `[Name](path)` markdown links pointing to entity directories.
