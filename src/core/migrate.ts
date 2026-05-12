@@ -2350,9 +2350,12 @@ export const MIGRATIONS: Migration[] = [
           ON facts(source_id, entity_slug)
           WHERE consolidated_at IS NULL AND expired_at IS NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_facts_embedding_hnsw
+        -- HNSW index: pgvector limits HNSW to 2000 dims for VECTOR,
+        -- 4096 for HALFVEC. Skip if embeddingDim exceeds the cap;
+        -- searchVector falls back to exact scan (microseconds at this scale).
+        ${embeddingDim <= 2000 ? `CREATE INDEX IF NOT EXISTS idx_facts_embedding_hnsw
           ON facts USING hnsw (embedding ${opclass})
-          WHERE embedding IS NOT NULL AND expired_at IS NULL;
+          WHERE embedding IS NOT NULL AND expired_at IS NULL;` : `-- HNSW index skipped: dims=${embeddingDim} exceeds pgvector HNSW cap of 2000; exact scan used.`}
       `;
 
       await engine.runMigration(40, factsDDL);

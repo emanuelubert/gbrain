@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   chunk_index           INTEGER NOT NULL,
   chunk_text            TEXT    NOT NULL,
   chunk_source          TEXT    NOT NULL DEFAULT 'compiled_truth',
-  embedding             vector(1536),
+  embedding             vector(4096),
   model                 TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
   token_count           INTEGER,
   embedded_at           TIMESTAMPTZ,
@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_page ON content_chunks(page_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
+-- HNSW index removed: pgvector limits HNSW to 2000 dims, but vector(4096) for Qwen3-Embedding-8B exceeds that. Sequential scan is microseconds at this corpus size; revisit if scaling to 100K+ chunks.
+-- CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
 -- v0.19.0: partial indexes — only code chunks populate these columns.
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON content_chunks(symbol_name) WHERE symbol_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON content_chunks(language) WHERE language IS NOT NULL;
@@ -389,8 +390,8 @@ CREATE TABLE IF NOT EXISTS config (
 
 INSERT INTO config (key, value) VALUES
   ('version', '1'),
-  ('embedding_model', 'text-embedding-3-large'),
-  ('embedding_dimensions', '1536'),
+  ('embedding_model', 'text-embedding-qwen3-embedding-8b'),
+  ('embedding_dimensions', '4096'),
   ('chunk_strategy', 'semantic')
 ON CONFLICT (key) DO NOTHING;
 
