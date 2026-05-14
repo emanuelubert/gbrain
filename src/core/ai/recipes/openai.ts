@@ -17,6 +17,16 @@ export const openai: Recipe = {
       dims_options: [256, 512, 768, 1024, 1536, 3072],
       cost_per_1m_tokens_usd: 0.13,
       price_last_verified: '2026-04-20',
+      // S173 (2026-05-14) local-fork patch: the openai recipe is also the
+      // Path-B recipe for a LOCAL LM Studio embedding server
+      // (OPENAI_BASE_URL redirect). Without max_batch_tokens, embed()
+      // takes the "OpenAI fast path" — ALL texts in one batch, no
+      // recursive-halving safety net — which wedges a local
+      // 8192-context model (text-embedding-qwen3-embedding-8b) on big
+      // pages. A conservative cap makes embed() pre-split into ~1-chunk
+      // sub-batches AND activates the token-limit recursion net.
+      // Harmless for the cloud OpenAI API (just more, smaller requests).
+      max_batch_tokens: 2000,
     },
     expansion: {
       models: ['gpt-5.2', 'gpt-4o-mini'],
