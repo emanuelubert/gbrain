@@ -5,6 +5,20 @@
 The PRIMARY SUBJECT of the content determines where it goes. Not the format,
 not the source, not the skill that's running.
 
+## Taxonomy note: life-management extension (2026-05-14)
+
+This brain runs a **life-management taxonomy**, not gbrain's default
+VC-flavored one. The `_brain-filing-rules.json` rules[] array carries both:
+the upstream defaults (people/, companies/, deals/, concepts/, ...) AND the
+life-management directories this brain actually uses — `institutions/`,
+`places/`, `events/`, `decisions/`, `diary/`, `programs/`, `health/metrics/`,
+`health/nutrition/`, `threads/`, `media/papers/`, `digests/external-llm/`,
+`digests/weekly/`, `inbox/`, `inbox/notes-for-review/`. These were added
+2026-05-14 (S172) to close 33 `filing_unknown_directory` warnings from
+`gbrain check-resolvable` — every ingest skill's `writes_to:` now resolves to
+a declared rule. Cross-references D22 (brain dir taxonomy), D18 (privacy
+tiers; diary/ is T1, inbox/t0/ gitignored).
+
 ## Decision Protocol
 
 1. Identify the primary subject (a person? company? concept? policy issue?)

@@ -140,6 +140,90 @@
       "directory": "conversations/",
       "examples": ["conversations/chatgpt/{thread-slug}.md", "conversations/claude/{thread-slug}.md"],
       "description": "Imported chat exports (ChatGPT, Claude, etc.) where the conversation itself is the artifact. Cross-link concepts and people from the conversation; the conversation page is the source-of-truth for the dialog. Distinct from voice-notes/ (which holds raw voice capture)."
+    },
+    {
+      "kind": "institution",
+      "directory": "institutions/",
+      "examples": ["universities", "companies", "funds", "government bodies", "conferences"],
+      "description": "A page whose primary subject is one institution or organization. The life-management taxonomy's equivalent of companies/ — broader, covering academic, governmental, and event-hosting bodies. Writers: calendar-ingest, email-ingest, apple-mail-ingest, apple-contacts-bootstrap, papers-ingest, enrich-orchestrator."
+    },
+    {
+      "kind": "place",
+      "directory": "places/",
+      "examples": ["homes", "venues", "travel destinations", "saved map locations"],
+      "description": "A page whose primary subject is a physical place. Writers: calendar-ingest, day-one-ingest, photos-metadata-ingest, voice-memo-ingest, enrich-orchestrator."
+    },
+    {
+      "kind": "event",
+      "directory": "events/",
+      "examples": ["conferences", "celebrations", "recurring-series occurrences", "one-off happenings"],
+      "description": "A page whose primary subject is an event. Distinct from meetings/ (work-meeting minutes) — events/ holds the broader life-event frame. Writers: day-one-ingest, voice-memo-ingest, enrich-orchestrator."
+    },
+    {
+      "kind": "decision",
+      "directory": "decisions/",
+      "examples": ["life decisions", "choices with recorded rationale", "decision logs"],
+      "description": "A page whose primary subject is a decision the user made or is making — the choice, alternatives considered, and rationale. Writers: day-one-ingest, voice-memo-ingest, external-llm-session-ingest, enrich-orchestrator."
+    },
+    {
+      "kind": "diary-entry",
+      "directory": "diary/",
+      "examples": ["daily journal entries", "Day One imports"],
+      "description": "A date-keyed personal journal entry. T1 privacy tier by default (git-crypt encrypted per D24). Primary writer: day-one-ingest."
+    },
+    {
+      "kind": "program",
+      "directory": "programs/",
+      "examples": ["areas of focus", "Health", "Family", "Finance", "Personal Development"],
+      "description": "An ongoing area-of-focus or life program — the durable life-management frame that organizes goals and recurring attention. Primary writer: programs-rebuild."
+    },
+    {
+      "kind": "health-metric",
+      "directory": "health/metrics/",
+      "examples": ["body measurements", "activity data", "sleep data"],
+      "description": "Health metric data, date-keyed. Writers: apple-health-ingest, apple-health-daily-ingest."
+    },
+    {
+      "kind": "health-nutrition",
+      "directory": "health/nutrition/",
+      "examples": ["food logs", "nutrition summaries", "calorie trajectories"],
+      "description": "Nutrition and food-log data. Primary writer: loseit-ingest."
+    },
+    {
+      "kind": "thread",
+      "directory": "threads/",
+      "examples": ["email threads", "iMessage conversations", "WhatsApp chats"],
+      "description": "A communication thread kept as a per-thread page. Writers: email-ingest, apple-mail-ingest, imessage-ingest, whatsapp-ingest."
+    },
+    {
+      "kind": "paper",
+      "directory": "media/papers/",
+      "examples": ["academic papers", "paper metadata + notes"],
+      "description": "Academic papers and their metadata. Format-prefixed under media/ per the sanctioned media-format exception. Primary writer: papers-ingest."
+    },
+    {
+      "kind": "external-llm-digest",
+      "directory": "digests/external-llm/",
+      "examples": ["digests prepared for frontier-model consumption"],
+      "description": "Digests prepared for external-LLM (frontier-model) consumption per the brain-to-Claude bridge. Primary writer: external-llm-digest."
+    },
+    {
+      "kind": "weekly-digest",
+      "directory": "digests/weekly/",
+      "examples": ["weekly rollup digests"],
+      "description": "Weekly rollup digests synthesizing the week's brain activity. Primary writer: weekly-digest."
+    },
+    {
+      "kind": "inbox-staging",
+      "directory": "inbox/",
+      "examples": ["content pending routing", "failure dumps", "regression captures"],
+      "description": "Staging area for content pending routing, review, or triage. Not a permanent home — content moves out after triage. Subdirs: failures/, regressions/, notes-for-review/, t0/ (gitignored T0 quarantine per D18)."
+    },
+    {
+      "kind": "notes-for-review",
+      "directory": "inbox/notes-for-review/",
+      "examples": ["ambiguous-classification items", "items needing human review"],
+      "description": "Ambiguous-classification items routed for human review before final filing. Writers: ingest skills' review-queue paths (calendar-ingest, external-llm-session-ingest, etc.)."
     }
   ],
   "sources_dir": {
