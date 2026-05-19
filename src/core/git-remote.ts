@@ -189,6 +189,9 @@ export function cloneRepo(url: string, destDir: string, opts: CloneOpts = {}): v
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeoutMs ?? 600_000,
       env: { ...process.env, ...GIT_ENV },
+      // 256 MB to handle large initial clones whose progress output exceeds
+      // Node's 1 MB default. Fork patch added 2026-05-19 (s178).
+      maxBuffer: 256 * 1024 * 1024,
     });
   } catch (e) {
     throw new GitOperationError(
@@ -207,6 +210,10 @@ export function pullRepo(repoPath: string, opts: { timeoutMs?: number } = {}): v
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeoutMs ?? 300_000,
       env: { ...process.env, ...GIT_ENV },
+      // 256 MB. A `git pull --ff-only` against a 20K+ file working tree
+      // emits rename-detection warnings + progress lines that exceed Node's
+      // 1 MB default → ENOBUFS. Fork patch added 2026-05-19 (s178).
+      maxBuffer: 256 * 1024 * 1024,
     });
   } catch (e) {
     throw new GitOperationError(
