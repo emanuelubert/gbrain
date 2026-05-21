@@ -262,19 +262,52 @@ export function applyResolveAuth(
     ? recipe.resolveAuth(cfg.env)
     : defaultResolveAuth(recipe, cfg.env, touchpoint);
 
+  // v0.37.6.0 — resolve default_headers (static or env-templated). Mutually
+  // exclusive; declaring both is a config error.
+  if (recipe.default_headers && recipe.resolveDefaultHeaders) {
+    throw new AIConfigError(
+      `Recipe "${recipe.id}" declares both default_headers and resolveDefaultHeaders. Pick one.`,
+      recipe.setup_hint,
+    );
+  }
+  const defaults = recipe.resolveDefaultHeaders
+    ? recipe.resolveDefaultHeaders(cfg.env)
+    : recipe.default_headers;
+
+  // v0.37.6.0 — defaults MUST NOT shadow the resolved auth header. SDK applies
+  // headers after apiKey, so an `Authorization` entry in defaults would replace
+  // the Bearer the SDK adds. Custom-header recipes (Azure: api-key) are
+  // protected the same way.
+  if (defaults) {
+    const lcResolved = resolved.headerName.toLowerCase();
+    for (const k of Object.keys(defaults)) {
+      const lc = k.toLowerCase();
+      if (lc === 'authorization' || lc === lcResolved) {
+        throw new AIConfigError(
+          `Recipe "${recipe.id}" default_headers contains "${k}" which would shadow the auth header. Remove it.`,
+          recipe.setup_hint,
+        );
+      }
+    }
+  }
+
   // Bearer-via-Authorization: use the SDK's native apiKey path (which sets
   // Authorization: Bearer <key> internally). Strip the 'Bearer ' prefix the
-  // resolver returned.
+  // resolver returned. Default headers ride alongside if declared.
   if (
     resolved.headerName === 'Authorization' &&
     resolved.token.startsWith('Bearer ')
   ) {
-    return { apiKey: resolved.token.slice('Bearer '.length) };
+    return defaults
+      ? { apiKey: resolved.token.slice('Bearer '.length), headers: { ...defaults } }
+      : { apiKey: resolved.token.slice('Bearer '.length) };
   }
 
   // Custom header (Azure: api-key). Use headers; do NOT pass apiKey, or the
   // SDK will also set Authorization and the server may reject double-auth.
-  return { headers: { [resolved.headerName]: resolved.token } };
+  // Defaults merge in first, resolver wins on key conflict (the shadow guard
+  // above already rejects conflicts, so this is defense-in-depth).
+  return { headers: { ...(defaults ?? {}), [resolved.headerName]: resolved.token } };
 }
 
 /**
@@ -2240,14 +2273,15 @@ export async function rerank(input: RerankInput): Promise<RerankResult[]> {
   const url = `${compat.baseURL.replace(/\/$/, '')}/models/rerank`;
   const auth = applyResolveAuth(recipe, cfg, 'reranker');
   // applyResolveAuth returns { apiKey } for Bearer-style auth (SDK's native
-  // path) or { headers } for custom-header providers (Azure). gateway.rerank
-  // builds the HTTP request directly (no SDK adapter), so we materialize
-  // both shapes into a Headers map.
-  const authHeaders: Record<string, string> = auth.headers
-    ? { ...auth.headers }
-    : auth.apiKey
-    ? { Authorization: `Bearer ${auth.apiKey}` }
-    : {};
+  // path) or { headers } for custom-header providers (Azure). v0.37.6.0:
+  // recipes can ALSO declare default_headers (attribution etc.) which flow
+  // through `auth.headers` alongside Bearer-style apiKey. The merge below
+  // materializes both shapes so static-default-headers ride on the reranker
+  // wire path the same way they ride the SDK paths.
+  const authHeaders: Record<string, string> = {
+    ...(auth.apiKey ? { Authorization: `Bearer ${auth.apiKey}` } : {}),
+    ...(auth.headers ?? {}),
+  };
   const body = JSON.stringify({
     model: parsed.modelId,
     query: input.query,

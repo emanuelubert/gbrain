@@ -2,6 +2,75 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.6.0] - 2026-05-20
+
+**One key, many hosted models.**
+
+You can now configure `openrouter:<provider>/<model>` directly in gbrain. OpenRouter proxies OpenAI, Anthropic, Google, DeepSeek, Meta, Qwen, and dozens of other hosted models through one OpenAI-compatible endpoint with one API key. Instead of juggling per-provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, etc.), you set `OPENROUTER_API_KEY` once and pick the model at call time. Embedding goes through too, defaulting to `openai/text-embedding-3-small` with Matryoshka shrink to 512/768/1024.
+
+OpenRouter shows up in `gbrain providers list` as the 16th recipe (alphabetical between Ollama and OpenAI). Your traffic gets attributed to gbrain on OR's leaderboard via `HTTP-Referer` + `X-OpenRouter-Title` headers; if you're running gbrain inside a different agent stack (a downstream agent, your own fork, anything else) set `OPENROUTER_REFERER` + `OPENROUTER_TITLE` so your traffic gets attributed to you instead.
+
+**How to turn it on**
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+gbrain providers list | grep -i openrouter           # see the new recipe
+gbrain providers env openrouter                      # see all OR-related env vars
+gbrain config set chat_model openrouter:anthropic/claude-sonnet-4.6
+gbrain config set embedding_model openrouter:openai/text-embedding-3-small
+gbrain config set embedding_dimensions 1024          # Matryoshka, optional
+```
+
+For forks attributing their own traffic:
+
+```bash
+export OPENROUTER_REFERER=https://your-app.example
+export OPENROUTER_TITLE="Your App"
+```
+
+**A few sharp edges to know about**
+
+- **Subagent loops stay Anthropic-direct.** gbrain's subagent infrastructure (the long tool-calling loop that powers `gbrain agent run`) is hard-pinned to Anthropic-direct because crash-replay needs stable `tool_use_id` blocks across attempts and OR's response normalization doesn't guarantee that. `openrouter:anthropic/claude-haiku-4.5` works fine for chat; it gets rejected at subagent submit time. Keep an Anthropic key if you use `gbrain agent`.
+- **Per-model context limits vary.** The OR catalog spans 128K to 1M+ context windows. The recipe declares no recipe-wide `max_context_tokens` — upstream errors surface per-model.
+- **Catalog churns.** The 8 curated chat slugs in the recipe (gpt-5.2, gpt-5.5, claude-haiku-4.5, claude-sonnet-4.6, claude-opus-4.7, gemini-3-flash-preview, deepseek-chat) are starting points, not a closed enum. Pass any OR model ID and it routes through; check https://openrouter.ai/models for the live catalog.
+
+**Under the hood — `default_headers` seam on Recipe**
+
+To ship attribution headers cleanly, this release adds a generic `Recipe.default_headers` (static) and `Recipe.resolveDefaultHeaders?(env)` (env-templated) seam. Headers from these fields ride alongside the existing Bearer auth on every openai-compatible touchpoint (embedding, expansion, chat, reranker). Two guards fire at `applyResolveAuth` time: declaring both fields throws `AIConfigError` (mutual exclusion); a default header that would shadow the auth header (`Authorization`, or any custom-header recipe's auth key) also throws. Together/Groq/any future recipe can opt into the same seam in a follow-up.
+
+The reranker HTTP path at `gateway.ts:2281` now merges both `Authorization: Bearer <key>` AND `auth.headers` (where default_headers flow) into the request's Headers map. Pre-fix the ternary picked one or the other; default_headers would have been silently dropped on the manual rerank path.
+
+**What's tested**
+
+Four new test files prove the seam reaches the wire, not just the return shape:
+
+- `test/ai/recipe-openrouter.test.ts` — 11 cases: recipe shape, Matryoshka `dims_options: [512, 768, 1024, 1536]`, `max_batch_tokens: 300_000` (OpenAI aggregate per-request cap, not per-input), arbitrary-ID acceptance, `resolveDefaultHeaders` defaults + env override, setup_hint coverage.
+- `test/ai/header-transport.test.ts` — 3 cases: synthetic recipes with custom `fetch` wrappers capture outgoing headers on `embed()`, `chat()`, and `rerank()`. Asserts Authorization + HTTP-Referer + X-OpenRouter-Title + X-Title all reach the wire.
+- `test/ai/recipes-existing-regression.test.ts` — IRON RULE preserved + 6 new contract cases for the `default_headers`/`resolveDefaultHeaders` merge and both safety guards.
+- `test/ai/build-gateway-config.test.ts` — 7 cases pinning the 5-way env-baseURL passthrough (LLAMA_SERVER, OLLAMA, LMSTUDIO, LITELLM, OPENROUTER) through the now-exported `buildGatewayConfig`. Mops up pre-existing untested drift on four legacy env vars in the same pass.
+
+Cherry-picked from [#1210](https://github.com/garrytan/gbrain/pull/1210). Contributed by @davemorin; corrections from an outside-voice review (Codex) folded in: recipe count math (16 not 17), current OR attribution header name (`X-OpenRouter-Title` preferred, `X-Title` back-compat), `max_batch_tokens` semantic (aggregate not per-input), Matryoshka dims for `text-embedding-3-small`, and the auth-shadow guard at `applyResolveAuth`.
+
+## To take advantage of v0.37.6.0
+
+`gbrain upgrade` should do this automatically. If it didn't, or if you want to verify the recipe shipped:
+
+1. **Check the recipe is registered:**
+   ```bash
+   gbrain providers list | grep -i openrouter
+   ```
+2. **Check env-var reporting:**
+   ```bash
+   OPENROUTER_API_KEY=fake-test gbrain providers env openrouter
+   ```
+   Should list `OPENROUTER_API_KEY` (required), `OPENROUTER_BASE_URL`, `OPENROUTER_REFERER`, `OPENROUTER_TITLE` (optional).
+3. **Smoke-test embeddings against a real key:**
+   ```bash
+   export OPENROUTER_API_KEY=sk-or-...
+   gbrain providers test --model openrouter:openai/text-embedding-3-small
+   ```
+4. **If any step fails,** file an issue at https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor`.
+
 ## [0.37.5.0] - 2026-05-20
 
 **`gbrain doctor` stops flagging your tags as broken when they're not.**

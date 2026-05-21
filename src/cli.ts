@@ -1393,12 +1393,14 @@ async function handleCliOnly(command: string, args: string[]) {
   }
 }
 
-// Build the AIGatewayConfig payload from a GBrainConfig. File-local; not
-// exported. Both configureGateway sites in connectEngine() pass through this
-// helper so adding a new field touches one place. Adding a field to one site
-// but not the other previously required remembering to mirror the change;
-// the helper makes that structural.
-function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
+// Build the AIGatewayConfig payload from a GBrainConfig. Both configureGateway
+// sites in connectEngine() pass through this helper so adding a new field
+// touches one place. Adding a field to one site but not the other previously
+// required remembering to mirror the change; the helper makes that structural.
+// v0.37.6.0: exported so `test/ai/build-gateway-config.test.ts` can pin the
+// env-baseURL passthrough contract for every `_BASE_URL` env var the CLI
+// reads (LLAMA_SERVER, OLLAMA, LMSTUDIO, LITELLM, OPENROUTER).
+export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   // v0.32 (#121 reworked): when ~/.gbrain/config.json declares
   // openai_api_key / anthropic_api_key, fold them into the gateway env so
   // recipes that read OPENAI_API_KEY / ANTHROPIC_API_KEY find them. Process
@@ -1419,6 +1421,7 @@ function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   if (process.env.OLLAMA_BASE_URL) envBaseUrls['ollama'] = process.env.OLLAMA_BASE_URL;
   if (process.env.LMSTUDIO_BASE_URL) envBaseUrls['lmstudio'] = process.env.LMSTUDIO_BASE_URL;
   if (process.env.LITELLM_BASE_URL) envBaseUrls['litellm'] = process.env.LITELLM_BASE_URL;
+  if (process.env.OPENROUTER_BASE_URL) envBaseUrls['openrouter'] = process.env.OPENROUTER_BASE_URL;
 
   return {
     embedding_model: c.embedding_model,
