@@ -2871,6 +2871,10 @@ export const MIGRATIONS: Migration[] = [
 
       const vecType = useHalfvec ? 'HALFVEC' : 'VECTOR';
       const opclass = useHalfvec ? 'halfvec_cosine_ops' : 'vector_cosine_ops';
+      // D-rebase-20260522: HNSW cap is 4000 for HALFVEC, 2000 for VECTOR per
+      // pgvector. Skip the index when embeddingDim exceeds the cap; exact scan
+      // remains correct (sub-ms at our scale). Mirrors D76's v40 facts pattern.
+      const hnswMaxDim = useHalfvec ? 4000 : 2000;
 
       const ddl = `
         CREATE TABLE IF NOT EXISTS query_cache (
@@ -2889,9 +2893,9 @@ export const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_query_cache_source_created
           ON query_cache(source_id, created_at DESC);
 
-        CREATE INDEX IF NOT EXISTS idx_query_cache_embedding_hnsw
+        ${embeddingDim <= hnswMaxDim ? `CREATE INDEX IF NOT EXISTS idx_query_cache_embedding_hnsw
           ON query_cache USING hnsw (embedding ${opclass})
-          WHERE embedding IS NOT NULL;
+          WHERE embedding IS NOT NULL;` : `-- HNSW index skipped: dims=${embeddingDim} exceeds pgvector HNSW cap of ${hnswMaxDim} for ${vecType}; exact scan used.`}
       `;
 
       await engine.runMigration(55, ddl);
