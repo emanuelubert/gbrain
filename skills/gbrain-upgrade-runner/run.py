@@ -156,6 +156,9 @@ class UpgradeEnvelope:
     binary_version_changed: bool = False   # Bug 3 gate: True iff Phase 3 actually changed the binary
     pre_upgrade_version: str = ""          # Bug 1 + Bug 2: version before upgrade attempt
     post_upgrade_version: str = ""         # Bug 1 + Bug 2: version after upgrade attempt
+    # Bug Class 5 (P-runner-refresh / v0.37 split-semantics) fields:
+    target_version_class: str = ""         # "legacy" (< v0.34.0) or "v0_34_plus" (>= v0.34.0)
+    migrate_only_invoked: bool = False     # True iff `gbrain init --migrate-only` ran
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -225,23 +228,48 @@ def _check_bun_link_divergence() -> tuple[bool, str]:
 
     Returns (is_bun_link, error_message).
     If not bun-link or no divergence, returns (False, "").
+
+    Bun-link detection uses two signals additively (P-runner-refresh fix):
+      1. Canonical: `~/.bun/install/global/node_modules/gbrain` is a symlink to
+         a real directory (typically `~/gbrain`).
+      2. Legacy fallback: `~/.bun/bin/gbrain` realpath contains `/src/cli.ts`.
+    The repo_root is derived from whichever signal fires.
     """
-    gbrain_bin = os.path.expanduser("~/.bun/bin/gbrain")
+    nm_path = os.path.expanduser("~/.bun/install/global/node_modules/gbrain")
+    repo_root: Optional[str] = None
+    real_path_for_msg: str = ""
 
-    # Resolve the real path (follow symlinks)
+    # Signal 1 — canonical: node_modules/gbrain symlink resolve.
     try:
-        real_path = os.path.realpath(gbrain_bin)
+        if os.path.islink(nm_path):
+            target = os.readlink(nm_path)
+            if not os.path.isabs(target):
+                target = os.path.normpath(os.path.join(os.path.dirname(nm_path), target))
+            if os.path.isdir(target):
+                repo_root = target
+                real_path_for_msg = target
     except (OSError, FileNotFoundError):
-        return False, ""
+        pass
 
-    # If real path contains "/src/cli.ts", it's bun-link mode (symlinked source)
-    if "/src/cli.ts" not in real_path:
-        return False, ""
+    if repo_root is None:
+        # Signal 2 — legacy: ~/.bun/bin/gbrain realpath ending in /src/cli.ts.
+        gbrain_bin = os.path.expanduser("~/.bun/bin/gbrain")
+        try:
+            real_path = os.path.realpath(gbrain_bin)
+        except (OSError, FileNotFoundError):
+            return False, ""
 
-    # Found bun-link mode — find the source repo via parent path
-    # ~/gbrain/src/cli.ts → ~/gbrain is the repo root
-    src_dir = os.path.dirname(real_path)  # .../gbrain/src
-    repo_root = os.path.dirname(src_dir)   # .../gbrain
+        # If real path contains "/src/cli.ts", it's bun-link mode (symlinked source).
+        if "/src/cli.ts" not in real_path:
+            return False, ""
+
+        # Found bun-link mode — find the source repo via parent path.
+        # ~/gbrain/src/cli.ts → ~/gbrain is the repo root.
+        src_dir = os.path.dirname(real_path)  # .../gbrain/src
+        repo_root = os.path.dirname(src_dir)   # .../gbrain
+        real_path_for_msg = real_path
+
+    real_path = real_path_for_msg  # preserve variable name for downstream string interpolations
 
     if not os.path.isdir(os.path.join(repo_root, ".git")):
         return True, f"bun-link mode detected (real path={real_path}) but no .git found in {repo_root}"
@@ -302,6 +330,78 @@ def _check_db_connectable() -> bool:
     """Check if Postgres gbrain database is reachable."""
     rc, _ = _run_quiet(["psql", "gbrain", "-c", "SELECT 1"])
     return rc == 0
+
+
+# ─── Bug Class 5 (P-runner-refresh) helpers: version-class routing + canonical bun-link signal ──
+
+
+def _parse_semver(version: str) -> tuple[int, int, int, str]:
+    """Parse a semver-like version string into (major, minor, patch, prerelease).
+
+    Accepts: "v0.34.0", "0.34.0", "0.34.0-beta.1", "0.37.11.0" (4-segment fork tags).
+    Returns (0, 0, 0, "") on parse failure (legacy fallback — safer to use legacy path).
+    """
+    if not version:
+        return (0, 0, 0, "")
+    v = version.strip()
+    if v.startswith("v") or v.startswith("V"):
+        v = v[1:]
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?(?:-(.+))?$", v)
+    if not m:
+        return (0, 0, 0, "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) or "")
+
+
+def _semver_lt(a: str, b: str) -> bool:
+    """Return True iff semver a < semver b. Handles pre-release suffixes.
+
+    Pre-release rule (matches semver 2.0): X.Y.Z-pre < X.Y.Z. So
+    _semver_lt("v0.34.0-beta.1", "v0.34.0") is True.
+    """
+    am, an, ap, apre = _parse_semver(a)
+    bm, bn, bp, bpre = _parse_semver(b)
+    if (am, an, ap) != (bm, bn, bp):
+        return (am, an, ap) < (bm, bn, bp)
+    # Same numeric triple: pre-release < release (empty pre means release)
+    if apre and not bpre:
+        return True
+    if not apre and bpre:
+        return False
+    return apre < bpre
+
+
+def _is_bun_link_mode() -> bool:
+    """Canonical bun-link signal (P-runner-refresh §11.5).
+
+    Resolves `~/.bun/install/global/node_modules/gbrain` via os.readlink().
+    If it is a symlink pointing to a real directory (typically `~/gbrain`),
+    we are in bun-link mode. Falls through to the legacy `~/.bun/bin/gbrain`
+    realpath signal if the new check is inconclusive (additive — does NOT
+    weaken the existing detector).
+
+    Returns True iff bun-link mode is positively detected.
+    """
+    nm_path = os.path.expanduser("~/.bun/install/global/node_modules/gbrain")
+    try:
+        # New canonical signal — direct symlink resolve at node_modules layer.
+        if os.path.islink(nm_path):
+            target = os.readlink(nm_path)
+            if not os.path.isabs(target):
+                target = os.path.normpath(os.path.join(os.path.dirname(nm_path), target))
+            if os.path.isdir(target):
+                return True
+            # Symlink to a non-existent or non-dir target: fall through to legacy.
+    except (OSError, FileNotFoundError):
+        # Path missing or unreadable: fall through to legacy signal.
+        pass
+
+    # Legacy fallback: ~/.bun/bin/gbrain realpath ending in /src/cli.ts.
+    gbrain_bin = os.path.expanduser("~/.bun/bin/gbrain")
+    try:
+        real_path = os.path.realpath(gbrain_bin)
+    except (OSError, FileNotFoundError):
+        return False
+    return "/src/cli.ts" in real_path
 
 
 def _get_db_embedding_dim() -> Optional[int]:
@@ -576,18 +676,14 @@ def phase2_stop_supervisor(briefing: dict, dry_run: bool, no_supervisor: bool) -
     return True, envelope
 
 
-def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool = False) -> tuple[bool, UpgradeEnvelope]:
-    """Phase 3: Canonical upgrade — GBRAIN_NO_REEMBED=1 gbrain upgrade."""
-    envelope = UpgradeEnvelope(fire_id=briefing.get("fire_id", ""), target_version=briefing.get("upstream", ""))
+def _phase3_legacy_gbrain_upgrade(envelope: UpgradeEnvelope) -> tuple[bool, UpgradeEnvelope]:
+    """Legacy Phase 3 implementation: `GBRAIN_NO_REEMBED=1 gbrain upgrade` single-step.
 
-    print("[Phase 3] Canonical upgrade...", file=sys.stderr)
-    print("  Command: GBRAIN_NO_REEMBED=1 gbrain upgrade", file=sys.stderr)
+    Used for target_version < v0.34.0 (pre-split-semantics). Preserves Bug 1 no-op
+    detection + Bug 3 binary_version_changed gating. Returns (success, envelope).
+    """
+    print("  [Legacy path] Command: GBRAIN_NO_REEMBED=1 gbrain upgrade", file=sys.stderr)
     print("  (Runs bun update + post-upgrade + apply-migrations + initSchema)", file=sys.stderr)
-
-    if dry_run:
-        print("  [DRY RUN] Skipping actual upgrade.", file=sys.stderr)
-        _audit_log("phase3_canonical_upgrade", "dry-run")
-        return True, envelope
 
     # Bug 1: Capture pre-upgrade version from package.json (authoritative for bun-link mode)
     pre_version = _get_package_version()
@@ -614,7 +710,6 @@ def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool 
             def normalize(v):
                 v = v.strip()
                 if v.startswith('v'): v = v[1:]
-                import re
                 m = re.match(r'(\d+\.\d+\.\d+)', v)
                 return m.group(1) if m else v
 
@@ -628,6 +723,8 @@ def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool 
                 _audit_log("phase3_canonical_upgrade", "already-at-target", {
                     "version": pre_version,
                     "target": target,
+                    "target_version_class": envelope.target_version_class,
+                    "migrate_only_invoked": envelope.migrate_only_invoked,
                 })
                 return True, envelope
 
@@ -645,6 +742,8 @@ def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool 
                     _audit_log("phase3_canonical_upgrade", "already-at-target", {
                         "version": pre_version,
                         "target_commit": target,
+                        "target_version_class": envelope.target_version_class,
+                        "migrate_only_invoked": envelope.migrate_only_invoked,
                     })
                     return True, envelope
             except (sp.TimeoutExpired, FileNotFoundError):
@@ -662,6 +761,8 @@ def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool 
             _audit_log("phase3_canonical_upgrade", "failed-noop", {
                 "pre_version": pre_version,
                 "post_version": post_version,
+                "target_version_class": envelope.target_version_class,
+                "migrate_only_invoked": envelope.migrate_only_invoked,
             })
             return False, envelope
 
@@ -671,11 +772,137 @@ def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool 
     except subprocess.CalledProcessError as e:
         print(f"  ERROR during upgrade: {e.stderr}", file=sys.stderr)
         envelope.error = f"gbrain upgrade failed: {e.stderr}"
-        _audit_log("phase3_canonical_upgrade", "failed", {"error": envelope.error})
+        _audit_log("phase3_canonical_upgrade", "failed", {
+            "error": envelope.error,
+            "target_version_class": envelope.target_version_class,
+            "migrate_only_invoked": envelope.migrate_only_invoked,
+        })
         return False, envelope
 
-    _audit_log("phase3_canonical_upgrade", "ok")
+    _audit_log("phase3_canonical_upgrade", "ok", {
+        "target_version_class": envelope.target_version_class,
+        "migrate_only_invoked": envelope.migrate_only_invoked,
+    })
     return True, envelope
+
+
+def _phase3_v034_plus(envelope: UpgradeEnvelope, bun_link_mode: bool) -> tuple[bool, UpgradeEnvelope]:
+    """v0.34+ Phase 3 implementation: split semantics — CLI upgrade + migrate-only.
+
+    Per S187 H.4 / D115 / D116: `gbrain upgrade` in v0.34+ self-updates the CLI
+    binary ONLY. Schema migrations apply via `gbrain init --migrate-only`. In
+    bun-link mode the CLI step is skipped entirely (source already advanced by
+    operator). The migrate step is load-bearing for all modes.
+    """
+    print(f"  [v0.34+ path] bun_link_mode={bun_link_mode}", file=sys.stderr)
+
+    # Capture pre-upgrade version regardless of mode (for audit row + parity with legacy).
+    pre_version = _get_package_version()
+    envelope.pre_upgrade_version = pre_version
+    print(f"  Pre-upgrade version: {pre_version}", file=sys.stderr)
+
+    # Step A — CLI self-update (skipped in bun-link mode).
+    if not bun_link_mode:
+        print("  Step A: GBRAIN_NO_REEMBED=1 gbrain upgrade (CLI self-update)", file=sys.stderr)
+        try:
+            _run(
+                ["gbrain", "upgrade"],
+                check=True,
+                env_override={"GBRAIN_NO_REEMBED": "1"},
+            )
+            post_version = _get_package_version()
+            envelope.post_upgrade_version = post_version
+            envelope.binary_version_changed = (pre_version != post_version)
+            print(f"  CLI: {pre_version} → {post_version} (changed={envelope.binary_version_changed})", file=sys.stderr)
+        except subprocess.CalledProcessError as e:
+            print(f"  ERROR during CLI upgrade: {e.stderr}", file=sys.stderr)
+            envelope.error = f"cli_upgrade_failed: {e.stderr}"
+            _audit_log("phase3_canonical_upgrade", "failed", {
+                "error": envelope.error,
+                "error_class": "cli_upgrade_failed",
+                "target_version_class": envelope.target_version_class,
+                "migrate_only_invoked": False,
+            })
+            return False, envelope
+    else:
+        print("  Step A: SKIPPED — bun-link mode (source already advanced by operator)", file=sys.stderr)
+        envelope.post_upgrade_version = pre_version
+        envelope.binary_version_changed = False
+
+    # Step B — schema migration via `gbrain init --migrate-only` (load-bearing for v0.34+).
+    print("  Step B: gbrain init --migrate-only (schema migration)", file=sys.stderr)
+    try:
+        _run(
+            ["gbrain", "init", "--migrate-only"],
+            check=True,
+            env_override={"GBRAIN_NO_REEMBED": "1"},
+        )
+        envelope.migrate_only_invoked = True
+        print("  Migration completed.", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        envelope.migrate_only_invoked = True   # We attempted it; record the attempt
+        print(f"  ERROR during migration: {e.stderr}", file=sys.stderr)
+        envelope.error = f"migrate_failed: {e.stderr}"
+        _audit_log("phase3_canonical_upgrade", "failed", {
+            "error": envelope.error,
+            "error_class": "migrate_failed",
+            "target_version_class": envelope.target_version_class,
+            "migrate_only_invoked": True,
+        })
+        return False, envelope
+
+    _audit_log("phase3_canonical_upgrade", "ok", {
+        "target_version_class": envelope.target_version_class,
+        "migrate_only_invoked": True,
+        "bun_link_mode": bun_link_mode,
+        "binary_version_changed": envelope.binary_version_changed,
+    })
+    return True, envelope
+
+
+def phase3_canonical_upgrade(briefing: dict, dry_run: bool, no_supervisor: bool = False) -> tuple[bool, UpgradeEnvelope]:
+    """Phase 3: Canonical upgrade — routes on target_version_class.
+
+    Per P-runner-refresh (S187 H.4 / D115 / D116), v0.34+ split the semantics:
+      - `gbrain upgrade` — CLI self-update only.
+      - `gbrain init --migrate-only` — schema migrations.
+    Targets < v0.34.0 use the legacy single-step path unchanged.
+    """
+    envelope = UpgradeEnvelope(fire_id=briefing.get("fire_id", ""), target_version=briefing.get("upstream", ""))
+
+    target = envelope.target_version or ""
+    is_legacy = _semver_lt(target, "v0.34.0")
+    envelope.target_version_class = "legacy" if is_legacy else "v0_34_plus"
+
+    print("[Phase 3] Canonical upgrade / migrate...", file=sys.stderr)
+    print(f"  Target version: {target!r} → class={envelope.target_version_class}", file=sys.stderr)
+
+    if dry_run:
+        if is_legacy:
+            print("  [DRY RUN] Legacy path: would run `GBRAIN_NO_REEMBED=1 gbrain upgrade`.", file=sys.stderr)
+        else:
+            bl = _is_bun_link_mode()
+            print(f"  [DRY RUN] v0.34+ path: bun_link_mode={bl}", file=sys.stderr)
+            if not bl:
+                print("  [DRY RUN]   Step A: `GBRAIN_NO_REEMBED=1 gbrain upgrade` (CLI self-update)", file=sys.stderr)
+            else:
+                print("  [DRY RUN]   Step A: SKIPPED (bun-link mode)", file=sys.stderr)
+            print("  [DRY RUN]   Step B: `gbrain init --migrate-only` (schema migration)", file=sys.stderr)
+            # In dry-run we still surface the planned audit fields for parity with prod.
+            envelope.migrate_only_invoked = False  # not actually invoked in dry-run
+        _audit_log("phase3_canonical_upgrade", "dry-run", {
+            "target_version_class": envelope.target_version_class,
+            "migrate_only_invoked": False,
+            "bun_link_mode": (_is_bun_link_mode() if not is_legacy else None),
+        })
+        return True, envelope
+
+    if is_legacy:
+        return _phase3_legacy_gbrain_upgrade(envelope)
+
+    # v0.34+ split-semantics path
+    bun_link_mode = _is_bun_link_mode()
+    return _phase3_v034_plus(envelope, bun_link_mode=bun_link_mode)
 
 
 def phase4_verify(briefing: dict, dry_run: bool, no_supervisor: bool = False) -> tuple[bool, UpgradeEnvelope]:
@@ -995,6 +1222,30 @@ def main():
 
         # Execute phase
         success, phase_envelope = phase_fn(briefing, args.dry_run, args.no_supervisor)
+
+        # Merge select sub-envelope fields into master envelope for stdout completeness.
+        # Pre-existing behavior preserved snapshot_path implicitly via phase2's mutation
+        # of its own envelope; here we explicitly propagate the new audit-row fields
+        # (target_version_class, migrate_only_invoked) plus pre-existing ones that
+        # downstream code (Phase 7, rollback) reads off the master envelope.
+        if phase_envelope.snapshot_path and not envelope.snapshot_path:
+            envelope.snapshot_path = phase_envelope.snapshot_path
+        if phase_envelope.pre_upgrade_version and not envelope.pre_upgrade_version:
+            envelope.pre_upgrade_version = phase_envelope.pre_upgrade_version
+        if phase_envelope.post_upgrade_version and not envelope.post_upgrade_version:
+            envelope.post_upgrade_version = phase_envelope.post_upgrade_version
+        if phase_envelope.binary_version_changed:
+            envelope.binary_version_changed = True
+        if phase_envelope.target_version_class and not envelope.target_version_class:
+            envelope.target_version_class = phase_envelope.target_version_class
+        if phase_envelope.migrate_only_invoked:
+            envelope.migrate_only_invoked = True
+        if phase_envelope.dim_parity_ok is not None and envelope.dim_parity_ok is None:
+            envelope.dim_parity_ok = phase_envelope.dim_parity_ok
+        if phase_envelope.doctor_pass is not None and envelope.doctor_pass is None:
+            envelope.doctor_pass = phase_envelope.doctor_pass
+        if phase_envelope.smoke_queries_passed and not envelope.smoke_queries_passed:
+            envelope.smoke_queries_passed = phase_envelope.smoke_queries_passed
 
         if success:
             phase_names_executed.append(phase_name)

@@ -95,20 +95,66 @@ Steps:
 4. Verify snapshot: `pg_restore --list /tmp/gbrain-pre-<version>.dump` (exit 0 = valid).
 5. Log snapshot path + size to audit trail.
 
-### Phase 3: Canonical Upgrade
+### Phase 3: Canonical Upgrade / Migrate
 
-**Input:** pg_dump snapshot from Phase 2; patch decisions from Phase 1.
-**Output:** gbrain upgraded to target version in global bun store.
-**Side effects:** `~/.bun/install/global/node_modules/gbrain/` replaced with new version.
-**Failure modes:** `gbrain upgrade` fails → exit 1; snapshot available for rollback.
+**Input:** pg_dump snapshot from Phase 2; patch decisions from Phase 1; target version.
+**Output:** gbrain CLI binary updated (if applicable) AND schema migrations applied to target.
+**Side effects:** For non-bun-link: `~/.bun/install/global/node_modules/gbrain/` replaced.
+For all modes (v0.34+): `public.config.version` advanced via `gbrain init --migrate-only`.
+**Failure modes:** CLI upgrade fails → exit 1 (migrate NOT attempted); migrate fails → exit 1 (audit row carries detail).
+
+**Version-class routing (NEW for v0.34+ per S187 H.4 / D115 / D116):**
+
+v0.34.0 split the semantics of `gbrain upgrade`:
+
+- `gbrain upgrade` → CLI binary self-update ONLY (no schema migration).
+- `gbrain init --migrate-only` → applies pending schema migrations canonically.
+
+Calling `gbrain upgrade` alone on a v0.34+ target leaves the schema at the
+pre-upgrade version even though the CLI is new — silent data risk if downstream
+code expects the new schema. The runner must invoke `gbrain init --migrate-only`
+as a second step for any target ≥ v0.34.0.
+
+Phase 3 now branches on the **target_version_class**:
+
+| Target | bun_link_mode | Action |
+|---|---|---|
+| `< v0.34.0` (legacy) | n/a | `GBRAIN_NO_REEMBED=1 gbrain upgrade` (single step, legacy path unchanged) |
+| `≥ v0.34.0` | False (binary install) | (a) `GBRAIN_NO_REEMBED=1 gbrain upgrade` for CLI self-update, then (b) `gbrain init --migrate-only` for schema |
+| `≥ v0.34.0` | True (bun-linked source) | SKIP `gbrain upgrade` (source already advanced via `git pull` / rebase / cherry-pick); invoke only `gbrain init --migrate-only` for schema |
+
+The cutoff is encoded at `run.py` `_semver_lt(target, "v0.34.0")`. Single
+point of edit if v0.38+ changes semantics again.
+
+**Why bun-link skips `gbrain upgrade`:** in bun-link mode the operator advances
+the source repo by hand (`git pull`, rebase, cherry-pick) and the CLI is a
+symlink to that source — `gbrain upgrade` would run `git pull --ff-only` and
+either no-op or clobber the fork's patches. Phase 0 already guards divergent
+histories; Phase 3 respects bun-link mode by skipping the CLI step entirely.
 
 Steps:
-1. Run canonical upgrade command: `GBRAIN_NO_REEMBED=1 gbrain upgrade`.
-   - This runs bun update + post-upgrade hooks + apply-migrations + initSchema.
-   - GBRAIN_NO_REEMBED=1 is REQUIRED: CJK chunker re-embed prompt defaults to proceed
-     when non-TTY; this env var prevents accidental full re-index.
-2. Re-apply ported patches to `~/.bun/install/global/node_modules/gbrain/`.
-3. Verify upgrade: `gbrain --version` returns target version.
+1. Detect target version class via `_semver_lt(target, "v0.34.0")`. If True → legacy
+   path: run `GBRAIN_NO_REEMBED=1 gbrain upgrade` (unchanged from original contract).
+2. (v0.34+) If NOT bun-link mode: run `GBRAIN_NO_REEMBED=1 gbrain upgrade` for
+   CLI self-update. Verify version actually changed (Bug 1 guard preserved).
+3. (v0.34+) Run `gbrain init --migrate-only` to apply pending schema migrations.
+   - This is load-bearing: schema version in `public.config.version` advances here.
+4. Verify post-step: `gbrain --version` (legacy + v0.34+ non-bun-link) AND
+   `psql gbrain -c "SELECT value FROM config WHERE key='version'"` (v0.34+ all modes).
+5. **GBRAIN_NO_REEMBED=1** still applies to `gbrain upgrade` (legacy + v0.34+
+   non-bun-link); CJK chunker re-embed prompt defaults to proceed when non-TTY.
+
+**Audit-row fields (NEW for v0.34+ contract):**
+- `target_version_class`: `"legacy"` (< v0.34.0) or `"v0_34_plus"` (≥ v0.34.0).
+- `migrate_only_invoked`: bool — True iff `gbrain init --migrate-only` ran.
+
+These fields make Phase 3 incidents grep-discoverable across future runs.
+
+**Provenance:** S186 rebase (D115) discovered the split-semantics in-flight at
+gate G-B→C. Pre-rebase runner contract (D74) was authored against v0.33 semantics
+where the split didn't exist. S187 H.4 formalized this refresh as parallel-track
+work. P-runner-refresh closed the gap. See §11.5 of
+`phase-2.5-active-memory-design_20260522.md` for the canonical scope.
 
 ### Phase 4: Verify
 
