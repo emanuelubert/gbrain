@@ -967,7 +967,11 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
         `OpenAI embedding requires OPENAI_API_KEY.`,
         recipe.setup_hint,
       );
-      const client = createOpenAI({ apiKey });
+      // S189 fork patch (D-chat-path-B-20260522): mirror S173 by honoring
+      // configured base URL so embeddings route to Path B (local LM Studio)
+      // explicitly instead of relying on AI SDK's env-var auto-detection.
+      const baseURL = cfg.base_urls?.openai ?? cfg.env.OPENAI_BASE_URL;
+      const client = createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
       // AI SDK v6: use .textEmbeddingModel() for embeddings
       return (client as any).textEmbeddingModel
         ? (client as any).textEmbeddingModel(modelId)
@@ -2023,7 +2027,12 @@ function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig):
     case 'native-openai': {
       const apiKey = cfg.env.OPENAI_API_KEY;
       if (!apiKey) throw new AIConfigError(`OpenAI chat requires OPENAI_API_KEY.`, recipe.setup_hint);
-      return createOpenAI({ apiKey }).languageModel(modelId);
+      // S189 fork patch (D-chat-path-B-20260522): mirror S173 embedding-side
+      // patch to chat — honor configured base URL so chat routes to Path B
+      // (local LM Studio) when set. Without this, createOpenAI() defaults to
+      // api.openai.com regardless of cfg.provider_base_urls.openai / env.
+      const baseURL = cfg.base_urls?.openai ?? cfg.env.OPENAI_BASE_URL;
+      return createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) }).languageModel(modelId);
     }
     case 'native-google': {
       const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
