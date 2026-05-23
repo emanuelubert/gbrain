@@ -1,0 +1,4 @@
+FAKE_BODY_THAT_MUST_NEVER_BE_OPENED_BY_THE_SKILL
+Same rule as messages.csv — Reactions.csv is in SKIP_LIST per
+operator decision S191-default-2. Phase 5 activity parser must
+not call any csv.reader on this file.

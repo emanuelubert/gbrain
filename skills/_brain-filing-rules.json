@@ -202,6 +202,12 @@
       "description": "Academic papers and their metadata. Format-prefixed under media/ per the sanctioned media-format exception. Primary writer: papers-ingest."
     },
     {
+      "kind": "course",
+      "directory": "media/courses/",
+      "examples": ["LinkedIn Learning courses", "MOOCs", "training videos"],
+      "description": "Courses + online learning content with completion + notes. Format-prefixed under media/ per the sanctioned media-format exception. Primary writer: linkedin-bootstrap (one-shot); future recurring courses-ingest skill."
+    },
+    {
       "kind": "external-llm-digest",
       "directory": "digests/external-llm/",
       "examples": ["digests prepared for frontier-model consumption"],

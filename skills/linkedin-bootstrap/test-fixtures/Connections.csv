@@ -1,0 +1,9 @@
+Notes:
+"When exporting your connection data, you may notice that some of the email addresses are missing. You will only see email addresses for connections who have allowed their connections to see or download them using this setting"
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On
+Klaus,Müller,https://www.linkedin.com/in/klaus-mueller-12345,klaus.mueller@rsm.nl,Rotterdam School of Management,Professor,2018-03-15
+KnownPerson,Existing,https://www.linkedin.com/in/known-existing-9999,known.existing@rsm.nl,Rotterdam School of Management,Researcher,2019-05-20
+LinkedIn,Member,,,,,2020-01-01
+,,,,,,
+NewPerson,Unknown,https://www.linkedin.com/in/new-unknown-7777,new.unknown@example.com,NewCo Inc,VP,2023-06-10

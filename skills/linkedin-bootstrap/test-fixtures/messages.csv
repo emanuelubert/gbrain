@@ -1,0 +1,5 @@
+FAKE_BODY_THAT_MUST_NEVER_BE_OPENED_BY_THE_SKILL
+This file's presence must NOT cause Phase 8 or any parser to open it.
+The Phase 8 SKIP_LIST hard-codes messages.csv as forbidden.
+If pytest test_phase8_skip_invariant_no_messages_read fires assertion,
+this file content would be in stdout — that test asserts the opposite.
