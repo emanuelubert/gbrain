@@ -3773,6 +3773,76 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 81,
+    name: 'enrich_stubs_phase_prereqs_v0_38_0_0',
+    // S195 Phase 1 (enrich_stubs dream-cycle phase). Per
+    // `~/resources/local-agent-system/knowledge-base/cdd-contracts/
+    // S195-enrich-stubs-phase.md` §1.3 + §3.2 Phase 1.
+    //
+    // Adds 3 columns to `pages` for per-page enrichment state tracking:
+    //   last_enriched_at        — wall-clock timestamp of last enrich_stubs run
+    //   last_enrichment_substrate_hash — sha256-12 of substrate bundle at
+    //     last run (idempotency key per §I3: re-runs no-op if substrate hash
+    //     + prompt version unchanged)
+    //   last_enrichment_signal_score — score at last run (debugging/audit)
+    //
+    // Creates `enrich_stubs_runs` cost-log table for per-run observability:
+    //   - cost tracking (§I11 cost cap)
+    //   - mode (forward dream-cycle vs backward weekend bulk)
+    //   - status (success/failed/abstain/skipped per §I10 failure isolation)
+    //   - stage1_used (T1 routing audit)
+    //   - prompt_version (idempotency + drift detection)
+    //
+    // Idempotent: ADD COLUMN IF NOT EXISTS + CREATE TABLE IF NOT EXISTS.
+    // No data backfill — fresh pages start NULL; first enrich_stubs run
+    // populates last_enriched_at.
+    idempotent: true,
+    sql: `
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS last_enriched_at TIMESTAMPTZ;
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS last_enrichment_substrate_hash TEXT;
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS last_enrichment_signal_score REAL;
+
+      -- Partial index supports the enrich_stubs page-selection query
+      -- (signal_score DESC, last_enriched_at NULLS FIRST) per CDD §1.11
+      -- forward-mode cadence. Partial WHERE filters to enrichable subset
+      -- (type-eligible) to keep index small.
+      CREATE INDEX IF NOT EXISTS pages_enrich_stubs_selection_idx
+        ON pages (last_enrichment_signal_score DESC NULLS LAST, last_enriched_at NULLS FIRST)
+        WHERE type IN ('person', 'institution', 'concept', 'idea', 'meeting')
+          AND deleted_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS enrich_stubs_runs (
+        id              BIGSERIAL PRIMARY KEY,
+        page_id         BIGINT      NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+        page_slug       TEXT        NOT NULL,
+        run_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        mode            TEXT        NOT NULL
+                        CHECK (mode IN ('forward', 'backward')),
+        signal_score    REAL        NOT NULL,
+        substrate_hash  TEXT        NOT NULL,
+        prompt_version  TEXT        NOT NULL,
+        model_used      TEXT        NOT NULL,
+        stage1_used     BOOLEAN     NOT NULL DEFAULT false,
+        cost_usd        REAL,
+        wall_time_ms    INTEGER,
+        status          TEXT        NOT NULL
+                        CHECK (status IN ('success', 'failed', 'abstain', 'skipped')),
+        error           TEXT,
+        output_diff_summary TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS enrich_stubs_runs_page_id_run_at_idx
+        ON enrich_stubs_runs (page_id, run_at DESC);
+
+      CREATE INDEX IF NOT EXISTS enrich_stubs_runs_run_at_idx
+        ON enrich_stubs_runs (run_at DESC);
+
+      CREATE INDEX IF NOT EXISTS enrich_stubs_runs_status_run_at_idx
+        ON enrich_stubs_runs (status, run_at DESC)
+        WHERE status != 'success';
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
