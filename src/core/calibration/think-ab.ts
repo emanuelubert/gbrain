@@ -25,7 +25,7 @@ import type { BrainEngine } from '../engine.ts';
 
 export interface ABRunInput {
   question: string;
-  /** Holder context for calibration. Default 'garry'. */
+  /** Holder context for calibration. Default 'emanuel' (fork; upstream 'garry'). */
   holder?: string;
   /** Engine for DB write. */
   engine: BrainEngine;

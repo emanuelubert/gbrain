@@ -104,7 +104,7 @@ export interface BrainstormOptions {
   modelOverride?: string;
   /** Skip the cost-preview TTY grace window. Required for non-interactive callers. */
   skipCostPreview?: boolean;
-  /** When set, force the user holder for calibration profile lookup. Falls back to config (`emotional_weight.user_holder`) then `'garry'`. */
+  /** When set, force the user holder for calibration profile lookup. Falls back to config (`emotional_weight.user_holder`) then `'emanuel'` (fork default; upstream is `'garry'`). */
   holderOverride?: string;
   /** Source scope. */
   sourceId?: string;
@@ -454,7 +454,7 @@ export async function runBrainstorm(
   }
 
   // ---- Phase 3: calibration context (cold-start fallback) ----
-  const holder = opts.holderOverride ?? config.emotional_weight?.user_holder ?? 'garry';
+  const holder = opts.holderOverride ?? config.emotional_weight?.user_holder ?? 'emanuel'; // S195-A1-2026-05-24
   const calibContext = await loadCalibrationContext(engine, {
     holder,
     sourceId: opts.sourceId,

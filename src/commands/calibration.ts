@@ -158,7 +158,7 @@ export async function runCalibration(
   config: GBrainConfig,
 ): Promise<void> {
   const { opts } = parseArgs(args);
-  const holder = opts.holder ?? 'garry';
+  const holder = opts.holder ?? 'emanuel'; // S195-A1-2026-05-24
   const sourceId = 'default';
 
   if (opts.undoWave) {
@@ -240,12 +240,12 @@ export async function getCalibrationProfileOp(
   ctx: OperationContext,
   params: { holder?: string },
 ): Promise<CalibrationProfileRow | null> {
-  const holder = params.holder ?? 'garry';
+  const holder = params.holder ?? 'emanuel'; // S195-A1-2026-05-24
   if (typeof holder !== 'string' || holder.length === 0) {
     throw new GBrainError(
       'INVALID_HOLDER',
       'get_calibration_profile.holder must be a non-empty string',
-      'pass holder="<slug>" or omit to default to "garry"',
+      'pass holder="<slug>" or omit to default to "emanuel"',
     );
   }
   const scope = sourceScopeOpts(ctx);

@@ -649,14 +649,14 @@ export async function checkAbandonedThreads(engine: BrainEngine): Promise<Check>
 
 /**
  * calibration_freshness: warns when the active calibration profile is
- * older than 7 days (configurable). Default holder 'garry'. Multi-source
- * brains see one row per source; this check uses the most recent across
- * all sources.
+ * older than 7 days (configurable). Default holder 'emanuel' (fork; upstream
+ * 'garry'). Multi-source brains see one row per source; this check uses the
+ * most recent across all sources.
  */
 export async function checkCalibrationFreshness(engine: BrainEngine): Promise<Check> {
   try {
     const rows = await engine.executeRaw<{ generated_at: Date | null }>(
-      `SELECT MAX(generated_at) AS generated_at FROM calibration_profiles WHERE holder = 'garry'`,
+      `SELECT MAX(generated_at) AS generated_at FROM calibration_profiles WHERE holder = 'emanuel'`, // S195-A1-2026-05-24
     );
     const generated = rows[0]?.generated_at;
     if (!generated) {

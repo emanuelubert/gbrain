@@ -68,8 +68,8 @@ export interface RunThinkOpts {
    */
   withCalibration?: boolean;
   /**
-   * Holder to retrieve the calibration profile for. Default 'garry'. Only
-   * consulted when withCalibration=true.
+   * Holder to retrieve the calibration profile for. Default 'emanuel' (fork;
+   * upstream 'garry'). Only consulted when withCalibration=true.
    */
   calibrationHolder?: string;
 }
@@ -231,7 +231,7 @@ export async function runThink(
     try {
       const { getLatestProfile } = await import('../../commands/calibration.ts');
       const profile = await getLatestProfile(engine, {
-        holder: opts.calibrationHolder ?? 'garry',
+        holder: opts.calibrationHolder ?? 'emanuel', // S195-A1-2026-05-24
       });
       if (profile) {
         calibrationBlockOpts = {

@@ -44,10 +44,10 @@ export const HIGH_EMOTION_TAGS: ReadonlySet<string> = new Set([
 
 /**
  * Holder name treated as "the user" for the Garry-as-holder ratio. Configurable
- * via the `emotional_weight.user_holder` config key (defaults to 'garry' to
- * match the v0.28 schema's takes table convention).
+ * via the `emotional_weight.user_holder` config key (defaults to 'emanuel' on
+ * this fork; upstream default was 'garry' per v0.28 schema convention).
  */
-export const DEFAULT_USER_HOLDER = 'garry';
+export const DEFAULT_USER_HOLDER = 'emanuel'; // S195-A1-2026-05-24
 
 export interface EmotionalWeightTake {
   holder: string;
