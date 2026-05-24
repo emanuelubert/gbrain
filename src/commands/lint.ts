@@ -172,7 +172,15 @@ export function lintContent(content: string, filePath: string): LintIssue[] {
     const nextSection = content.indexOf('\n## ', sectionStart);
     const sectionBody = content.slice(sectionStart, nextSection > 0 ? nextSection : undefined).trim();
 
-    if (sectionBody === '' || sectionBody === '[No data yet]' || sectionBody === '*[To be filled by agent]*') {
+    // S195 fork-patch (2026-05-24): `[No data yet]` is the canonical L40
+    // "no signal" marker per ~/gbrain/docs/ethos/MARKDOWN_SKILLS_AS_RECIPES.md
+    // + ~/gbrain/docs/GBRAIN_RECOMMENDED_SCHEMA.md — it is VALID section
+    // content marking explicit absence of signal, NOT an error condition.
+    // Truly-empty sections still flag; `*[To be filled by agent]*` still
+    // flags as "awaiting enrichment". This change clears ~16,344 false-
+    // positive lint issues (33% of pre-patch backlog). To revert: restore
+    // `|| sectionBody === '[No data yet]'` to the disjunction.
+    if (sectionBody === '' || sectionBody === '*[To be filled by agent]*') {
       const lineNum = content.slice(0, sectionMatch.index).split('\n').length;
       issues.push({
         file: filePath, line: lineNum, rule: 'empty-section',
@@ -233,6 +241,267 @@ export interface LintResult {
   total_fixed: number;
   dryRun: boolean;
   applied_fix: boolean;
+}
+
+// ── S195 A.4 (2026-05-24): per-category routing for the dream-cycle ─────────
+// lint phase. Mode values map to behaviors documented in
+// `~/resources/local-agent-system/knowledge-base/cdd-contracts/
+// S195-dream-lint-active-mode.md` §1.2 operator-approved table.
+// To revert this surface area: remove `runLintCoreWithCategories` + the
+// frontmatter import below; restore cycle.ts call to plain `runLintCore`.
+//
+// Background lint rule names (stable; see FRONTMATTER_RULE_NAMES + per-rule
+// `issues.push({rule: '<name>'})` calls above) — categories operators
+// configure via `gbrain config set dream.lint.<category>.mode <mode>`:
+//   - body-fixable:       code-fence-wrap, llm-preamble
+//   - frontmatter-fixable: frontmatter-null-bytes, frontmatter-missing-close,
+//                          frontmatter-nested-quotes
+//   - structural:          frontmatter-slug-mismatch, frontmatter-empty,
+//                          frontmatter-yaml-parse, missing-title,
+//                          missing-type, missing-created, no-frontmatter,
+//                          placeholder-date, broken-citation, empty-section
+//
+// Operators may pass either the lint rule name (`frontmatter-null-bytes`)
+// or the SHOUTY validation code (`NULL_BYTES`) — the former is canonical;
+// the latter is honored as a convenience alias against the
+// FRONTMATTER_RULE_NAMES map.
+
+export type LintCategoryMode = 'auto-fix' | 'surface-to-operator' | 'audit';
+
+export interface LintCategoryStats {
+  total: number;
+  fixed: number;
+  surfaced: number;
+  mode: LintCategoryMode;
+}
+
+export interface LintWithCategoriesOpts {
+  target: string;
+  dryRun?: boolean;
+  /** Per-category mode lookup. Receives the canonical lint rule name; may
+   *  return undefined (defaults to 'audit'). Async to allow DB reads. */
+  getMode: (category: string) => Promise<LintCategoryMode | undefined>;
+  /** Where to write the inbox surfacing doc. Defaults to
+   *  `<target>/_inbox/lint-surfaced-<YYYY-MM-DD>.md`. */
+  inboxDir?: string;
+}
+
+export interface LintWithCategoriesResult extends LintResult {
+  total_surfaced: number;
+  by_category: Record<string, LintCategoryStats>;
+  /** Absolute path to the inbox doc, when surfacing wrote something. */
+  inbox_path?: string;
+}
+
+/**
+ * v0.37.x (S195 A.4): library-level lint with per-category mode routing.
+ * Active-fix replacement for the audit-only lint phase. Walks pages once;
+ * collects issues; routes each category by mode:
+ *   - `auto-fix`     → body fixes via fixContent(), frontmatter fixes via
+ *                      autoFixFrontmatter(); non-fixable issues in this
+ *                      mode degrade silently (counted, not written).
+ *   - `surface-to-operator` → collects into <inboxDir>/lint-surfaced-<DATE>.md
+ *                             (ONE doc, sections per category — invariant I3).
+ *   - `audit`        → counts only (legacy behavior; safe default).
+ *
+ * Honored only when explicit getMode() returns a mode; otherwise audit.
+ * Engine-aware callers wire getMode() to a DB read of `dream.lint.<cat>.mode`.
+ */
+export async function runLintCoreWithCategories(
+  opts: LintWithCategoriesOpts,
+): Promise<LintWithCategoriesResult> {
+  if (!opts.target) {
+    throw new Error('lint: target (dir|file.md) required');
+  }
+  if (!existsSync(opts.target)) {
+    throw new Error(`Not found: ${opts.target}`);
+  }
+  const isSingleFile = statSync(opts.target).isFile();
+  const pages = isSingleFile ? [opts.target] : collectPages(opts.target);
+
+  // SHOUTY-code → canonical-name alias map (operators may use either).
+  // Reuses the same mapping the lint rules use internally.
+  const SHOUTY_ALIASES: Record<string, string> = {
+    NULL_BYTES: 'frontmatter-null-bytes',
+    MISSING_CLOSE: 'frontmatter-missing-close',
+    NESTED_QUOTES: 'frontmatter-nested-quotes',
+    SLUG_MISMATCH: 'frontmatter-slug-mismatch',
+    YAML_PARSE: 'frontmatter-yaml-parse',
+    EMPTY_FRONTMATTER: 'frontmatter-empty',
+  };
+  const BODY_FIXABLE = new Set(['code-fence-wrap', 'llm-preamble']);
+  const FRONTMATTER_FIXABLE_RULES = new Set([
+    'frontmatter-null-bytes',
+    'frontmatter-missing-close',
+    'frontmatter-nested-quotes',
+  ]);
+
+  // Resolve mode per category, with shouty-alias fallback. Cache lookups
+  // so we don't query the DB twice per category.
+  const modeCache = new Map<string, LintCategoryMode>();
+  async function resolveMode(category: string): Promise<LintCategoryMode> {
+    if (modeCache.has(category)) return modeCache.get(category)!;
+    let mode = await opts.getMode(category);
+    if (!mode) {
+      // Try SHOUTY alias if the canonical name has no mode set.
+      const shouty = Object.entries(SHOUTY_ALIASES).find(([, v]) => v === category)?.[0];
+      if (shouty) mode = await opts.getMode(shouty);
+    }
+    const final: LintCategoryMode = mode ?? 'audit';
+    modeCache.set(category, final);
+    return final;
+  }
+
+  const byCategory: Record<string, LintCategoryStats> = {};
+  function bump(category: string, mode: LintCategoryMode, field: 'total' | 'fixed' | 'surfaced') {
+    if (!byCategory[category]) {
+      byCategory[category] = { total: 0, fixed: 0, surfaced: 0, mode };
+    }
+    byCategory[category][field]++;
+  }
+
+  let totalIssues = 0;
+  let totalFixed = 0;
+  let totalSurfaced = 0;
+  let pagesWithIssues = 0;
+
+  // Surfacing accumulator: category → list of {file, line, message}.
+  const surfaced: Record<string, Array<{ file: string; line: number; message: string }>> = {};
+
+  // Lazy import for frontmatter auto-fix; only loaded when we have
+  // frontmatter-fixable issues in auto-fix mode.
+  let autoFixFrontmatterFn: typeof import('../core/brain-writer.ts').autoFixFrontmatter | null = null;
+  async function ensureFrontmatterFixer() {
+    if (!autoFixFrontmatterFn) {
+      const mod = await import('../core/brain-writer.ts');
+      autoFixFrontmatterFn = mod.autoFixFrontmatter;
+    }
+    return autoFixFrontmatterFn;
+  }
+
+  for (const page of pages) {
+    const content = readFileSync(page, 'utf-8');
+    const relPath = isSingleFile ? page : relative(opts.target, page);
+    const issues = lintContent(content, relPath);
+    if (issues.length === 0) continue;
+    pagesWithIssues++;
+    totalIssues += issues.length;
+
+    // Resolve modes for every category that appears on this page.
+    const pageCategories = new Set(issues.map(i => i.rule));
+    const pageModes = new Map<string, LintCategoryMode>();
+    for (const cat of pageCategories) pageModes.set(cat, await resolveMode(cat));
+
+    // Bump totals first (mode-independent count).
+    for (const i of issues) bump(i.rule, pageModes.get(i.rule)!, 'total');
+
+    // ── Pass 1: body fixes (auto-fix mode AND body-fixable) ──────────────
+    const hasBodyAutofix = issues.some(
+      i => BODY_FIXABLE.has(i.rule) && pageModes.get(i.rule) === 'auto-fix' && i.fixable,
+    );
+    let working = content;
+    let modified = false;
+    if (hasBodyAutofix) {
+      const fixed = fixContent(working);
+      if (fixed !== working) {
+        working = fixed;
+        modified = true;
+        for (const i of issues) {
+          if (BODY_FIXABLE.has(i.rule) && pageModes.get(i.rule) === 'auto-fix' && i.fixable) {
+            totalFixed++;
+            bump(i.rule, pageModes.get(i.rule)!, 'fixed');
+          }
+        }
+      }
+    }
+
+    // ── Pass 2: frontmatter fixes (auto-fix mode AND frontmatter-fixable) ─
+    const hasFmAutofix = issues.some(
+      i => FRONTMATTER_FIXABLE_RULES.has(i.rule) && pageModes.get(i.rule) === 'auto-fix',
+    );
+    if (hasFmAutofix) {
+      const fix = await ensureFrontmatterFixer();
+      const { content: fixedFm, fixes } = fix(working, { filePath: page });
+      if (fixes.length > 0 && fixedFm !== working) {
+        working = fixedFm;
+        modified = true;
+        // Count one "fixed" per matching issue per applied fix code (1:1 map).
+        const appliedCodes = new Set(fixes.map(f => f.code));
+        for (const i of issues) {
+          if (!FRONTMATTER_FIXABLE_RULES.has(i.rule)) continue;
+          if (pageModes.get(i.rule) !== 'auto-fix') continue;
+          // Map canonical rule name back to validation code for cross-check.
+          const code = Object.entries(SHOUTY_ALIASES).find(([, v]) => v === i.rule)?.[0];
+          if (code && appliedCodes.has(code as never)) {
+            totalFixed++;
+            bump(i.rule, pageModes.get(i.rule)!, 'fixed');
+          }
+        }
+      }
+    }
+
+    // ── Pass 3: surfacing collection ─────────────────────────────────────
+    for (const i of issues) {
+      const mode = pageModes.get(i.rule)!;
+      if (mode !== 'surface-to-operator') continue;
+      if (!surfaced[i.rule]) surfaced[i.rule] = [];
+      surfaced[i.rule].push({ file: relPath, line: i.line, message: i.message });
+      totalSurfaced++;
+      bump(i.rule, mode, 'surfaced');
+    }
+
+    // Write modified content (if any) once per page.
+    if (modified && !opts.dryRun) {
+      writeFileSync(page, working);
+    }
+  }
+
+  // ── Inbox emission (one doc, sections per category) ──────────────────
+  let inboxPath: string | undefined;
+  const surfacedCategories = Object.keys(surfaced);
+  if (surfacedCategories.length > 0 && !opts.dryRun) {
+    const today = new Date().toISOString().slice(0, 10);
+    const inboxDir = opts.inboxDir ?? join(opts.target, '_inbox');
+    if (!existsSync(inboxDir)) mkdirSync(inboxDir, { recursive: true });
+    inboxPath = join(inboxDir, `lint-surfaced-${today}.md`);
+    const sections: string[] = [];
+    sections.push(`---`);
+    sections.push(`title: "Dream-cycle lint surfacing — ${today}"`);
+    sections.push(`type: inbox`);
+    sections.push(`created: ${today}`);
+    sections.push(`tags: [lint, dream-cycle, operator-review]`);
+    sections.push(`---`);
+    sections.push(``);
+    sections.push(`# Lint issues surfaced for operator review`);
+    sections.push(``);
+    sections.push(`Generated by the dream-cycle lint phase; categories below`);
+    sections.push(`are configured to \`surface-to-operator\` mode. Triage by`);
+    sections.push(`category cluster; resolve underlying ingest pipeline if`);
+    sections.push(`a category recurs.`);
+    sections.push(``);
+    for (const category of surfacedCategories.sort()) {
+      const entries = surfaced[category];
+      sections.push(`## ${category} (${entries.length})`);
+      sections.push(``);
+      for (const e of entries) {
+        sections.push(`- \`${e.file}:${e.line}\` — ${e.message}`);
+      }
+      sections.push(``);
+    }
+    writeFileSync(inboxPath, sections.join('\n') + '\n');
+  }
+
+  return {
+    pages_scanned: pages.length,
+    pages_with_issues: pagesWithIssues,
+    total_issues: totalIssues,
+    total_fixed: totalFixed,
+    total_surfaced: totalSurfaced,
+    dryRun: !!opts.dryRun,
+    applied_fix: totalFixed > 0,
+    by_category: byCategory,
+    inbox_path: inboxPath,
+  };
 }
 
 /**

@@ -515,27 +515,84 @@ function checkAborted(signal?: AbortSignal): void {
 
 // ─── Phase runners ─────────────────────────────────────────────────
 
-async function runPhaseLint(brainDir: string, dryRun: boolean): Promise<PhaseResult> {
+// ── S195 A.4 (2026-05-24): per-category active-fix routing ─────────────
+// CDD: ~/resources/local-agent-system/knowledge-base/cdd-contracts/
+//      S195-dream-lint-active-mode.md
+// Mode lookup reads `dream.lint.<category>.mode` from DB-plane config.
+// Default `audit` preserves legacy behavior when no engine is available
+// or when keys are unset (invariant I1 — backwards compat).
+// To revert: restore the prior `runLintCore({fix:true})` callsite below
+// and drop the new `runLintCoreWithCategories` import.
+async function runPhaseLint(
+  engine: BrainEngine | null,
+  brainDir: string,
+  dryRun: boolean,
+): Promise<PhaseResult> {
   try {
-    const { runLintCore } = await import('../commands/lint.ts');
-    const result = await runLintCore({ target: brainDir, fix: true, dryRun });
+    // No engine → fall back to the legacy audit-only / body-fix path.
+    // (Filesystem phases can run without a DB; per-category routing
+    //  requires the DB-plane config so we don't silently auto-mutate.)
+    if (!engine) {
+      const { runLintCore } = await import('../commands/lint.ts');
+      const result = await runLintCore({ target: brainDir, fix: true, dryRun });
+      const issues = result.total_issues ?? 0;
+      const fixed = result.total_fixed ?? 0;
+      const remaining = Math.max(0, issues - fixed);
+      const status: PhaseStatus =
+        issues === 0 || (!dryRun && remaining === 0) ? 'ok' : 'warn';
+      return {
+        phase: 'lint',
+        status,
+        duration_ms: 0,
+        summary: dryRun
+          ? `${issues} issue(s) found (dry-run, no writes)`
+          : `${fixed} fix(es) applied, ${remaining} remaining`,
+        details: { issues, fixed, pages_scanned: result.pages_scanned, dryRun, mode_routing: 'legacy-no-engine' },
+      };
+    }
+
+    // Engine present → per-category routing via DB-plane config.
+    const { runLintCoreWithCategories } = await import('../commands/lint.ts');
+    type LintCategoryMode = 'auto-fix' | 'surface-to-operator' | 'audit';
+    const result = await runLintCoreWithCategories({
+      target: brainDir,
+      dryRun,
+      getMode: async (category: string) => {
+        try {
+          const v = await engine.getConfig(`dream.lint.${category}.mode`);
+          if (v === 'auto-fix' || v === 'surface-to-operator' || v === 'audit') {
+            return v as LintCategoryMode;
+          }
+          return undefined;
+        } catch {
+          return undefined;
+        }
+      },
+    });
+
     const issues = result.total_issues ?? 0;
     const fixed = result.total_fixed ?? 0;
-    const remaining = Math.max(0, issues - fixed);
-    // 'ok' when nothing noteworthy remains:
-    //   - no issues at all, or
-    //   - non-dry-run and everything fixable was fixed.
-    // 'warn' when issues remain after the run.
+    const surfaced = result.total_surfaced ?? 0;
+    const remaining = Math.max(0, issues - fixed - surfaced);
     const status: PhaseStatus =
       issues === 0 || (!dryRun && remaining === 0) ? 'ok' : 'warn';
     return {
       phase: 'lint',
       status,
-      duration_ms: 0, // set by caller
+      duration_ms: 0,
       summary: dryRun
-        ? `${issues} issue(s) found (dry-run, no writes)`
-        : `${fixed} fix(es) applied, ${remaining} remaining`,
-      details: { issues, fixed, pages_scanned: result.pages_scanned, dryRun },
+        ? `${issues} issue(s) found (dry-run, no writes); routing preview by_category`
+        : `${fixed} fix(es) applied, ${surfaced} surfaced, ${remaining} audited`,
+      details: {
+        issues,
+        fixed,
+        surfaced,
+        pages_scanned: result.pages_scanned,
+        dryRun,
+        by_category: result.by_category,
+        inbox_path: result.inbox_path,
+        mode_routing: 'per-category',
+      },
     };
   } catch (e) {
     return {
@@ -1125,10 +1182,12 @@ export async function runCycle(
 
   try {
     // ── Phase 1: lint ────────────────────────────────────────────
+    // S195 A.4: engine threaded through so the lint phase can read
+    // per-category routing config from the DB-plane.
     if (phases.includes('lint')) {
       checkAborted(opts.signal);
       progress.start('cycle.lint');
-      const { result, duration_ms } = await timePhase(() => runPhaseLint(opts.brainDir, dryRun));
+      const { result, duration_ms } = await timePhase(() => runPhaseLint(engine, opts.brainDir, dryRun));
       result.duration_ms = duration_ms;
       phaseResults.push(result);
       progress.finish();
