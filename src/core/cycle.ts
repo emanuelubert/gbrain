@@ -65,6 +65,12 @@ export type CyclePhase =
   //  - calibration_profile: aggregates the resolved subset into 2-4
   //    narrative pattern statements + active bias tags. Voice-gated.
   | 'propose_takes' | 'grade_takes' | 'calibration_profile'
+  // S196 — clean dream-cycle stub enricher (replaces canonical-enrich
+  // corruption mode). Per CDD ~/resources/local-agent-system/knowledge-base/
+  // cdd-contracts/S195-enrich-stubs-phase.md. Ships disabled by default
+  // (enrich_stubs.enabled config gate); explicit opt-in required AFTER
+  // Gate B operator review of bundler.py privacy assertion.
+  | 'enrich_stubs'
   | 'embed' | 'orphans' | 'purge';
 
 export const ALL_PHASES: CyclePhase[] = [
@@ -79,6 +85,12 @@ export const ALL_PHASES: CyclePhase[] = [
   // The empty-fence guard refuses to run if pre-v51 legacy facts are
   // pending the v0_32_2 backfill (Codex R2-#7).
   'extract_facts',
+  // S196 — enrich_stubs runs AFTER extract + extract_facts (signal-score
+  // depends on accurate link/timeline counts) but BEFORE propose_takes
+  // (so propose_takes selection sees enriched compiled_truth, not bulk-
+  // ingest stubs — addresses A.5 propose_takes-idle root cause).
+  // Default-disabled; opt-in AFTER Gate B clearance per CDD.
+  'enrich_stubs',
   // v0.33.3 W0c — within-file two-pass symbol resolution. Runs AFTER
   // extract + extract_facts so any code edges sync emitted (still bare-token)
   // get resolved into {resolved_chunk_id: N} / {ambiguous: true,
@@ -1320,6 +1332,34 @@ export async function runCycle(
         const xfSourceId = (await resolveSourceForDir(engine, opts.brainDir)) ?? 'default';
         const { result, duration_ms } = await timePhase(() =>
           runPhaseExtractFacts(engine, opts.brainDir, xfSourceId, dryRun, syncPagesAffected));
+        result.duration_ms = duration_ms;
+        phaseResults.push(result);
+        progress.finish();
+      }
+      await safeYield(opts.yieldBetweenPhases);
+    }
+
+    // ── S196 Phase 5: enrich_stubs (clean stub enricher) ──────────
+    // Runs AFTER extract_facts (signal-score depends on accurate counts)
+    // and BEFORE propose_takes (so the takes phase sees enriched substrate,
+    // not bulk-ingest stubs — fixes A.5 propose_takes-idle root cause).
+    // Default-disabled via enrich_stubs.enabled config gate; explicit
+    // operator opt-in AFTER Gate B clearance per CDD.
+    if (phases.includes('enrich_stubs')) {
+      checkAborted(opts.signal);
+      if (!engine) {
+        phaseResults.push({
+          phase: 'enrich_stubs',
+          status: 'skipped',
+          duration_ms: 0,
+          summary: 'no database connected',
+          details: { reason: 'no_database' },
+        });
+      } else {
+        progress.start('cycle.enrich_stubs');
+        const { runPhaseEnrichStubs } = await import('./cycle/phases/enrich-stubs.ts');
+        const { result, duration_ms } = await timePhase(() =>
+          runPhaseEnrichStubs(engine, { dryRun }));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();
