@@ -171,10 +171,19 @@ async function gatherReflections(
   lookbackDays: number,
 ): Promise<ReflectionRef[]> {
   const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+  // S197-CONT-2026-05-25 personal-life-corpus-filter: original filter scoped to
+  // wiki/personal/reflections/% which doesn't exist in this fork's brain corpus.
+  // Additive expansion to include diary + daily-aggregate + decisions so the
+  // phase actually has input. Fork-patch; maintain through upstream rebase.
   const rows = await engine.executeRaw<{ slug: string; title: string | null; compiled_truth: string | null }>(
     `SELECT slug, title, compiled_truth
        FROM pages
-      WHERE slug LIKE 'wiki/personal/reflections/%'
+      WHERE (
+              slug LIKE 'wiki/personal/reflections/%'
+           OR slug LIKE 'diary/%'
+           OR slug LIKE 'daily-aggregate/%'
+           OR slug LIKE 'decisions/%'
+            )
         AND updated_at >= $1::timestamptz
       ORDER BY updated_at DESC
       LIMIT 100`,
@@ -195,25 +204,29 @@ function buildPatternsPrompt(reflections: ReflectionRef[], minEvidence: number):
     .map((r, i) => `### ${i + 1}. [[${r.slug}]] — ${r.title}\n${r.excerpt}`)
     .join('\n\n---\n\n');
 
-  return `You are surfacing recurring themes across the user's recent reflections.
+  // S197-CONT-2026-05-25 prompt-content-agnostic: source pages are now multiple
+  // personal-life types (diary / daily-aggregate / decisions / reflections),
+  // not reflections only. Citation hint generalized to <source-slug> wikilinks.
+  return `You are surfacing recurring patterns across the user's recent personal-life pages (diary entries, daily aggregates, decisions, and reflections).
 
 OUTPUT POLICY
-- Only name a pattern if it appears in at least ${minEvidence} DISTINCT reflections.
-- Each pattern page MUST cite the reflections that constitute its evidence (use [[wiki/personal/reflections/...]] wikilinks).
+- Only name a pattern if it appears in at least ${minEvidence} DISTINCT source pages.
+- Each pattern page MUST cite the source pages that constitute its evidence (use [[<source-slug>]] wikilinks — wikilinks resolve any slug under diary/, daily-aggregate/, decisions/, or wiki/personal/reflections/).
 - Use \`search\` to check whether a similar pattern page already exists; if yes, update it (use the same slug). If no, create a new one.
 - Pattern slug format: \`wiki/personal/patterns/<topic-slug>\` (lowercase alphanumeric + hyphens; no underscores, no extension, no date).
-- A "pattern" is a recurring theme, anxiety, decision pattern, relationship dynamic, or self-knowledge motif. NOT a single insight. NOT a list of unrelated topics.
+- A "pattern" is a recurring theme, state-regime (e.g., productivity-discipline equilibrium → trigger → break → new regime), decision pattern, relationship dynamic, behavioral cycle, or self-knowledge motif. NOT a single insight. NOT a list of unrelated topics.
+- For state-regime patterns, characterize: (a) the stable state, (b) typical triggers that break it, (c) what state it transitions into.
 
 DO NOT WRITE
 - A "patterns from today" digest (that's the dream-cycle-summaries page; not your job).
-- Patterns with <${minEvidence} reflections cited.
+- Patterns with <${minEvidence} source pages cited.
 - Anything outside wiki/personal/patterns/.
 
 CONTEXT
 - Today: ${today}
-- Reflections in scope: ${reflections.length}
+- Source pages in scope: ${reflections.length}
 
-REFLECTIONS
+SOURCE PAGES
 ${corpus}
 
 When done, briefly list the pattern slugs you wrote/updated in your final message.`;
