@@ -16,7 +16,7 @@
  *   gbrain lint <file.md>          # lint single file
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, lstatSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, lstatSync, existsSync, mkdirSync } from 'fs';
 import { join, relative } from 'path';
 import { parseMarkdown, type ParseValidationCode } from '../core/markdown.ts';
 
